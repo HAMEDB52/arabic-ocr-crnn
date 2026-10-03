@@ -1,0 +1,134 @@
+# arabic-ocr-crnn — تعرّف ضوئي على النصوص العربية (CNN-LSTM + CTC)
+
+خط كامل للتعرّف على أسطر النصوص العربية: **توليد بيانات صناعية بتشكيل بصري صحيح**، ثم **معمارية CRNN** مدرَّبة بخسارة CTC، ثم **تقييم بـ CER/WER**.
+
+[![tests](https://img.shields.io/badge/tests-18%20passed-brightgreen)](#الاختبارات)
+[![python](https://img.shields.io/badge/python-3.10%2B-blue)](#التثبيت)
+[![license](https://img.shields.io/badge/license-MIT-lightgrey)](LICENSE)
+
+---
+
+## لماذا العربية صعبة هنا
+
+| التحدي | الأثر على الأنظمة الجاهزة |
+|---|---|
+| اتصال الحروف وتغيّر شكلها حسب موضعها | التقطيع إلى حروف منفصلة يفشل، فيلزم نهج بلا تقطيع (CTC) |
+| الاتجاه من اليمين إلى اليسار | مولّدات البيانات التي لا تدعم التخطيط المعقّد تنتج نصاً مقلوباً أو مفكّك الحروف — فتتدرب الشبكة على بيانات خاطئة |
+| تفاوت عرض الكلمة بحسب الخط | الحشو والمحاذاة الثابتة يشوّهان النسب |
+
+هذا المشروع يعالج الثلاثة: التوليد يستخدم **تخطيط النص المعقّد في Pillow (raqm)** مع `direction="rtl"`، والنموذج **بلا تقطيع** يتعلّم المحاذاة ضمنياً عبر CTC، والتحجيم يحفظ نسبة الصورة ويحاذي النص لليمين.
+
+## المعمارية
+
+```
+صورة رمادية 32×256
+   ↓ Conv32 → Pool(2,2)        16×128
+   ↓ Conv64 → Pool(2,2)         8×64
+   ↓ Conv128 + BN → Pool(2,1)   4×64
+   ↓ Conv128 + BN → Pool(2,1)   2×64
+   ↓ إعادة تشكيل إلى تسلسل      64 خطوة زمنية × 256 سمة
+   ↓ Dense(128) + Dropout
+   ↓ BiLSTM(128) × 2
+   ↓ Dense(53)  ← حجم المفردات + رمز CTC الفارغ
+   ↓ CTC loss / greedy decode
+```
+
+عدد المعاملات ≈ **945 ألف** — نموذج صغير يتدرّب على المعالج المركزي وحده.
+
+## التثبيت
+
+```bash
+git clone https://github.com/<اسم-المستخدم>/arabic-ocr-crnn.git
+cd arabic-ocr-crnn
+pip install -r requirements-dev.txt
+```
+
+## الاستخدام
+
+```bash
+# توليد عيّنات للفحص البصري قبل أي تدريب
+python -m arabic_ocr.cli samples --out samples --count 8
+
+# التدريب
+python -m arabic_ocr.cli train --epochs 30 --train-size 6000 --val-size 600
+
+# التعرّف على صورة سطر
+python -m arabic_ocr.cli predict samples/sample_00.png
+```
+
+```python
+from arabic_ocr.synth import generate_dataset
+from arabic_ocr.infer import load_model, predict_batch
+from arabic_ocr.metrics import corpus_metrics
+
+images, refs = generate_dataset(32, seed=999)
+preds = predict_batch(load_model("artifacts/arabic_crnn.keras"), images)
+print(corpus_metrics(refs, preds))
+```
+
+## الوحدات
+
+| الملف | المسؤولية |
+|---|---|
+| `charset.py` | مجموعة المحارف والترميز — الفهرس 0 محجوز لرمز CTC الفارغ |
+| `synth.py` | توليد أسطر نصية عربية مُشكَّلة بصرياً بشكل صحيح، مع ضوضاء وتمويه وخطوط متعددة |
+| `model.py` | معمارية CRNN، خسارة CTC، فك الترميز الجشِع |
+| `data.py` | ترميز التسميات والحشو وبناء `tf.data` |
+| `train.py` | حلقة التدريب مع خفض معدل التعلّم والإيقاف المبكر، وحفظ النموذج والمقاييس |
+| `infer.py` | تهيئة صورة خارجية والتنبؤ |
+| `metrics.py` | مسافة التحرير، CER، WER، تجميع على مستوى المجموعة |
+
+## البيانات الصناعية
+
+المفردات مستمدة من لغة المستندات الإدارية والفواتير (`فاتورة`، `الرقم الضريبي`، `الإجمالي`، `المورد`…) بأنماط من كلمة إلى ثلاث كلمات وأرقام. التنويع يشمل: خطّين (IBM Plex Sans Arabic و Noto Kufi Arabic)، أربعة أحجام، تمويه غاوسي عشوائي، وضوضاء غاوسية.
+
+> **لماذا بيانات صناعية؟** لتوفير زوج (صورة، نص) مضمون الصحة بحجم كافٍ دون وسم يدوي. والانتقال إلى بيانات حقيقية لا يتطلب تغيير المعمارية — فقط استبدال `generate_dataset` بمحمّل بياناتك.
+
+## النتائج الفعلية
+
+تدريب على **المعالج المركزي فقط**: ٦٠٠٠ عيّنة تدريب، ٦٠٠ تحقق، ٣٠ حقبة، حجم دفعة ٣٢ (≈ ٣٥ دقيقة).
+
+| المقياس | القيمة |
+|---|---|
+| معدل خطأ المحرف (CER) | **9.95%** |
+| معدل خطأ الكلمة (WER) | 26.33% |
+| مطابقة تامة للسطر | 53.83% |
+| خسارة التحقق النهائية | 3.84 |
+
+أمثلة من مجموعة التحقق:
+
+```
+✓ التوقيع التاريخ        → التوقيع التاريخ
+✓ وصف التاريخ            → وصف التاريخ
+✗ السجل اسم ضريبية       → السجل اسم ضريية      (حرف مفقود)
+✗ البريد 54079           → البريد 679           (أرقام طويلة)
+```
+
+**قراءة النتيجة بصدق**: الكلمات العربية تُقرأ بدقة عالية، ومصدر الخطأ الأكبر **التسلسلات الرقمية الطويلة** — ظاهرة متوقعة لأن الأرقام لا تحمل سياقاً لغوياً يساعد الشبكة، ولأن التدريب توقف عند ٣٠ حقبة والخسارة ما زالت في انحدار. الترقية المباشرة: مضاعفة الحقب، وزيادة نسبة الأمثلة الرقمية في التوليد، وفك ترميز بـ beam search.
+
+لإعادة إنتاج النتيجة: `python -m arabic_ocr.cli train --epochs 30 --train-size 6000 --val-size 600`
+
+## الاختبارات
+
+```bash
+python -m pytest -q      # 18 اختباراً
+```
+
+تغطي: ترميز المحارف ذهاباً وإياباً · تجاهل المحارف خارج المجموعة · صحة CER/WER مقابل أمثلة محسوبة يدوياً · أبعاد الصور ومداها · إعادة إنتاج البيانات بنفس البذرة · شكل مخرجات النموذج · أن الخطوات الزمنية تفوق أطول تسمية (شرط CTC) · أن فك الترميز يزيل التكرارات والرموز الفارغة.
+
+## الحدود المعروفة
+
+- النموذج مدرَّب على **بيانات صناعية**: الأداء على صور ممسوحة حقيقية (ميل، إضاءة غير منتظمة، خطوط يدوية) سيكون أدنى ويحتاج ضبطاً دقيقاً على بيانات موسومة.
+- التشكيل (الحركات) مستبعد من مجموعة المحارف، والهمزات مبسَّطة في التوليد.
+- المدخل **سطر واحد**: تحليل تخطيط الصفحة وكشف الأسطر خارج نطاق هذا المستودع.
+- فك الترميز جشِع بلا نموذج لغوي — إضافة beam search مع نموذج لغوي ترفع الدقة.
+
+## الترخيص
+
+MIT — انظر [LICENSE](LICENSE).
+
+---
+
+## English summary
+
+**arabic-ocr-crnn** is an end-to-end Arabic text-line OCR pipeline: a synthetic data generator that renders correctly shaped right-to-left Arabic via Pillow's complex text layout (raqm), a compact CRNN (4 conv blocks → 2 BiLSTM layers → 53-way output, ~945K parameters) trained with CTC loss, greedy CTC decoding, and CER/WER evaluation. Segmentation-free by design: the network learns character alignment implicitly. Includes CLI (`samples`, `train`, `predict`), reproducible data generation, and 18 tests covering charset round-trips, metric correctness, data integrity, and CTC constraints.

@@ -1,0 +1,21 @@
+[project]
+name = "arabic-ocr-crnn"
+version = "0.1.0"
+description = "تعرّف ضوئي على النصوص العربية بمعمارية CNN-LSTM وخسارة CTC، مع مولّد بيانات صناعية وتقييم CER/WER"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = ["tensorflow-cpu>=2.16", "numpy>=1.26", "pillow>=10.0"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+arabic-ocr = "arabic_ocr.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
