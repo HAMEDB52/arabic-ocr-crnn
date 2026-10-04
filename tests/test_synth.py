@@ -32,3 +32,27 @@ def test_dataset_is_reproducible():
     b_img, b_txt = generate_dataset(5, seed=42)
     assert a_txt == b_txt
     assert np.allclose(a_img, b_img)
+
+
+def test_preprocess_passes_model_sized_images_through_unchanged(tmp_path):
+    # صورة نظيفة بمقاس النموذج يجب ألا تُقص أو يُعاد تحجيمها، وإلا تضخّم النص عمّا رآه النموذج في التدريب
+    import random
+
+    import numpy as np
+    from PIL import Image
+
+    from arabic_ocr.infer import preprocess
+    from arabic_ocr.synth import IMG_HEIGHT, IMG_WIDTH, _fonts, render
+
+    class NoAugment(random.Random):
+        def random(self):  # يعطّل التمويه والضوضاء في render
+            return 0.99
+
+    font_path, size = _fonts()[0]
+    clean = render("السجل 2024", font_path=font_path, font_size=size, rng=NoAugment())
+    pixels = (clean * 255).round().astype("uint8")
+    path = tmp_path / "line.png"
+    Image.fromarray(pixels).save(path)
+    out = preprocess(path)
+    assert out.shape == (1, IMG_HEIGHT, IMG_WIDTH, 1)
+    assert np.array_equal((out[0, ..., 0] * 255).round().astype("uint8"), pixels)
